@@ -70,7 +70,11 @@ static int dbg_enable = 0;
 /* CHRG_USB_CTRL */
 #define CHRG_EN			(1 << 7)
 
+/* ADC_CTRL_REG */
 #define ADC_TS2_EN		(1 << 4)
+#define ADC_TS1_EN		(1 << 5)
+
+/* TS_CTRL_REG */
 #define TS2_ADC_MODE		(1 << 5)
 
 /* SUP_STS_REG */
@@ -130,6 +134,23 @@ static int dbg_enable = 0;
 #define TS2_VOL_MULTI		0
 #define TS2_CHECK_CNT		5
 
+#define ADC_CUR_MSK		0x03
+#define ADC_CUR_20UA		0x00
+#define ADC_CUR_40UA		0x01
+#define ADC_CUR_60UA		0x02
+#define ADC_CUR_80UA		0x03
+
+#define NTC_CALC_FACTOR_80UA	7
+#define NTC_CALC_FACTOR_60UA	9
+#define NTC_CALC_FACTOR_40UA	13
+#define NTC_CALC_FACTOR_20UA	27
+#define NTC_80UA_MAX_MEASURE	27500
+#define NTC_60UA_MAX_MEASURE	36666
+#define NTC_40UA_MAX_MEASURE	55000
+#define NTC_20UA_MAX_MEASURE	110000
+
+#define TS1_NOT_READY		0xabcdabcd
+
 #define DIV(x)			((x) ? (x) : 1)
 
 /***********************************************************/
@@ -151,6 +172,12 @@ struct battery_info {
 	int		nac;
 	u32		*ocv_table;
 	u32		ocv_size;
+	u32		*ntc_table;
+	u32		ntc_size;
+	u32		ntc_factor;
+	u32		ntc_uA;
+	int		ntc_degree_from;
+	int		temperature;
 	int		virtual_power;
 	int		ts2_vol_multi;
 	int		pwroff_min;
@@ -876,6 +903,43 @@ static int rk818_bat_calc_linek(struct battery_info *di)
 	return linek;
 }
 
+static void rk818_bat_init_ts1(struct battery_info *di)
+{
+	u8 buf;
+	u32 *ntc_table = di->ntc_table;
+
+	if (!di->ntc_size)
+		return;
+
+	/* select uA */
+	buf = rk818_bat_read(RK818_TS_CTRL_REG);
+	buf &= ~ADC_CUR_MSK;
+	/* chose suitable UA for temperature detect */
+	if (ntc_table[0] < NTC_80UA_MAX_MEASURE) {
+		di->ntc_factor = NTC_CALC_FACTOR_80UA;
+		di->ntc_uA = 80;
+		buf |= ADC_CUR_80UA;
+	} else if (ntc_table[0] < NTC_60UA_MAX_MEASURE) {
+		di->ntc_factor = NTC_CALC_FACTOR_60UA;
+		di->ntc_uA = 60;
+		buf |= ADC_CUR_60UA;
+	} else if (ntc_table[0] < NTC_40UA_MAX_MEASURE) {
+		di->ntc_factor = NTC_CALC_FACTOR_40UA;
+		di->ntc_uA = 40;
+		buf |= ADC_CUR_40UA;
+	} else {
+		di->ntc_factor = NTC_CALC_FACTOR_20UA;
+		di->ntc_uA = 20;
+		buf |= ADC_CUR_20UA;
+	}
+	rk818_bat_write(RK818_TS_CTRL_REG, buf);
+
+	/* ADC_TS1_EN */
+	buf = rk818_bat_read(RK818_ADC_CTRL_REG);
+	buf |= ADC_TS1_EN;
+	rk818_bat_write(RK818_ADC_CTRL_REG, buf);
+}
+
 static void rk818_bat_init_ts2(struct battery_info *di)
 {
 	u8 buf;
@@ -899,6 +963,7 @@ static void rk818_bat_fg_init(struct battery_info *di)
 	rk818_bat_enable_gauge(di);
 	rk818_bat_init_voltage_kb(di);
 	rk818_bat_init_coffset(di);
+	rk818_bat_init_ts1(di);
 	rk818_bat_init_ts2(di);
 	rk818_bat_clr_initialized_state(di);
 	di->dsoc = rk818_bat_get_dsoc(di);
@@ -1202,7 +1267,7 @@ static void rk818_bat_debug_info(struct battery_info *di)
 	    "K=%d, old_cap=%d, charger=%s, Is=%d, Ip=%d, Vs=%d\n"
 	    "min=%d, meet: soc=%d, calc: dsoc=%d, rsoc=%d, Vocv=%d\n"
 	    "off: i=0x%x, c=0x%x, max=%d, ocv_c=%d, halt: st=%d, cnt=%d\n"
-	    "pwr: dsoc=%d, rsoc=%d, vol=%d, Res=%d, exist=%d\n",
+	    "pwr: dsoc=%d, rsoc=%d, vol=%d, Res=%d, exist=%d, T=%d'C\n",
 	    di->dsoc, rk818_bat_get_rsoc(di), rk818_bat_get_avg_voltage(di),
 	    rk818_bat_get_avg_current(di), di->remain_cap, di->fcc,
 	    di->rsoc - di->dsoc,
@@ -1214,7 +1279,8 @@ static void rk818_bat_debug_info(struct battery_info *di)
 	    rk818_bat_get_ocv_voltage(di), rk818_bat_get_ioffset(di),
 	    rk818_bat_get_coffset(di), di->is_max_soc_offset,
 	    di->is_ocv_calib, di->is_halt, di->halt_cnt, di->pwr_dsoc,
-	    di->pwr_rsoc, di->pwr_vol, di->sample_res, is_rk818_bat_exist(di)
+	    di->pwr_rsoc, di->pwr_vol, di->sample_res, is_rk818_bat_exist(di),
+	    di->temperature
 	    );
 	rk818_bat_get_chrg_status(di);
 	DBG("###########################################################\n");
@@ -1365,10 +1431,160 @@ out:
 	rk818_bat_debug_info(di);
 }
 
+/*
+ * Due to hardware design issue, Vdelta = "(R_sample + R_other) * I_avg" will be
+ * included into TS1 adc value. We must subtract it to get correct adc value.
+ * The solution:
+ *
+ * (1) calculate Vdelta:
+ *
+ *   adc1 - Vdelta    ua1			  (adc2 * ua1) - (adc1 * ua2)
+ *   ------------- = -----  ==> equals: Vdelta = -----------------------------
+ *   adc2 - Vdelta    ua2				ua1 - ua2
+ *
+ *
+ * (2) calculate correct ADC value:
+ *
+ *     charging: ADC = adc1 - abs(Vdelta);
+ *  discharging: ADC = adc1 + abs(Vdelta);
+ */
+static int rk818_bat_get_ntc_res(struct battery_info *di)
+{
+	static int adc1 = 0, adc2 = 0, ua1 = 0, ua2 = 0;
+	static int adc1_update = 0, first_in = 1;
+	static ulong seconds;
+	int v_delta, val, res;
+	u8 buf;
+
+	/* hold adc1 and wait 1s for adc2 updated */
+	if (!adc1_update) {
+		/* update flag and init adc1,adc2 !! */
+		adc1_update = 1;
+		seconds = get_timer(0);
+		adc1 = 0;
+		adc2 = 0;
+
+		/* read sample ua1 */
+		buf = rk818_bat_read(RK818_TS_CTRL_REG);
+		DBG("<%s>. read adc1, sample uA=%d\n",
+		    __func__, ((buf & 0x03) + 1) * 20);
+
+		/* read adc adc1 */
+		ua1 = di->ntc_uA;
+		adc1 |= rk818_bat_read(RK818_TS1_ADC_REGL) << 0;
+		adc1 |= rk818_bat_read(RK818_TS1_ADC_REGH) << 8;
+
+		/* chose reference UA for adc2 */
+		ua2 = (ua1 != 20) ? 20 : 40;
+		buf = rk818_bat_read(RK818_TS_CTRL_REG);
+		buf &= ~ADC_CUR_MSK;
+		buf |= ((ua2 - 20) / 20);
+		rk818_bat_write(RK818_TS_CTRL_REG, buf);
+	}
+
+	/* wait 1s for adc2 updated */
+	if (get_timer(seconds) < SECONDS(1)) {
+		if (first_in)
+			first_in = 0;
+		else
+			return TS1_NOT_READY;
+	}
+
+	/* update flags ! */
+	adc1_update = 0;
+
+	/* read sample ua2 */
+	buf = rk818_bat_read(RK818_TS_CTRL_REG);
+	DBG("<%s>. read adc2, sample uA=%d\n",
+	    __func__, ((buf & 0x03) + 1) * 20);
+
+	/* read adc adc2 */
+	adc2 |= rk818_bat_read(RK818_TS1_ADC_REGL) << 0;
+	adc2 |= rk818_bat_read(RK818_TS1_ADC_REGH) << 8;
+
+	DBG("<%s>. ua1=%d, ua2=%d, adc1=%d, adc2=%d\n",
+	    __func__, ua1, ua2, adc1, adc2);
+
+	/* calculate delta voltage */
+	if (adc2 != adc1)
+		v_delta = abs((adc2 * ua1 - adc1 * ua2) / (ua2 - ua1));
+	else
+		v_delta = 0;
+
+	/* considering current avg direction, calcuate real adc value */
+	val = (di->current_avg >= 0) ? (adc1 - v_delta) : (adc1 + v_delta);
+
+	DBG("<%s>. Iavg=%d, Vdelta=%d, Vadc=%d\n",
+	    __func__, di->current_avg, v_delta, val);
+
+	res = val * di->ntc_factor;
+
+	DBG("<%s>. val=%d, ntc_res=%d, ntc_factor=%d\n",
+	    __func__, val, res, di->ntc_factor);
+
+	DBG("<%s>. t=[%d'C(%d) ~ %dC(%d)]\n", __func__,
+	    di->ntc_degree_from, di->ntc_table[0],
+	    di->ntc_degree_from + di->ntc_size - 1,
+	    di->ntc_table[di->ntc_size - 1]);
+
+	rk818_bat_init_ts1(di);
+
+	return res;
+}
+
+static int rk818_bat_update_temperature(struct battery_info *di)
+{
+	static int first_time = 1, old_temperature = 25;
+	u32 ntc_size, *ntc_table;
+	int i, res, temp;
+
+	ntc_table = di->ntc_table;
+	ntc_size = di->ntc_size;
+
+	if (ntc_size) {
+		res = rk818_bat_get_ntc_res(di);
+		if (res == TS1_NOT_READY) {
+			di->temperature = old_temperature;
+			return TS1_NOT_READY;
+		}
+
+		if (res < ntc_table[ntc_size - 1]) {
+			di->temperature = di->ntc_degree_from;
+			old_temperature = di->ntc_degree_from;
+			printf("bat ntc upper max degree: R=%d\n", res);
+		} else if (res > ntc_table[0]) {
+			di->temperature = di->ntc_degree_from + di->ntc_size - 1;
+			old_temperature = di->ntc_degree_from + di->ntc_size - 1;
+			printf("bat ntc lower min degree: R=%d\n", res);
+		} else {
+			for (i = 0; i < ntc_size; i++) {
+				if (res >= ntc_table[i])
+					break;
+			}
+
+			/* if first in, init old_temperature */
+			temp = (i + di->ntc_degree_from);
+			if (first_time) {
+				di->temperature = temp;
+				old_temperature = temp;
+				first_time = 0;
+			}
+
+			old_temperature = temp;
+			di->temperature = temp;
+		}
+	}
+
+	DBG("temperature=%d\n", di->temperature);
+
+	return 0;
+}
+
 static int rk818_bat_update(struct pmic *p, struct pmic *bat)
 {
 	struct battery *battery = bat->pbat->bat;
-	static ulong seconds;
+	static ulong seconds, ts1_seconds;
+	int wait;
 
 	i2c_set_bus_num(bat->bus);
 	i2c_init(RK818_I2C_SPEED, bat->hw.i2c.addr);
@@ -1379,8 +1595,18 @@ static int rk818_bat_update(struct pmic *p, struct pmic *bat)
 	rk818_bat_charger_setting(&rk818_fg.di, rk818_fg.di.state_of_chrg);
 
 	/* fg calc every 5 seconds */
-	if (!seconds)
+	if (!seconds || !ts1_seconds) {
 		seconds = get_timer(0);
+		ts1_seconds = get_timer(0);
+	}
+
+	/* temperature calc every 5 seconds */
+	if (get_timer(ts1_seconds) >= SECONDS(5)) {
+		wait = rk818_bat_update_temperature(&rk818_fg.di);
+		if (!wait)
+			ts1_seconds = get_timer(0);
+	}
+
 	if (get_timer(seconds) >= SECONDS(5)) {
 		seconds = get_timer(0);
 		rk818_bat_smooth_charge(&rk818_fg.di);
@@ -1410,6 +1636,7 @@ static int rk818_bat_parse_dt(struct battery_info *di, void const *blob)
 	int node, parent;
 	int len;
 	int err;
+	u32 sign, degree_from[2];
 	const char *prop;
 
 	parent = fdt_node_offset_by_compatible(blob, g_i2c_node,
@@ -1498,6 +1725,40 @@ static int rk818_bat_parse_dt(struct battery_info *di, void const *blob)
 		di->dc_is_valid = true;
 	}
 
+	prop = fdt_getprop(blob, node, "ntc_table", &len);
+	if (!prop) {
+		di->ntc_size = 0;
+	} else {
+		err = fdtdec_get_int_array(blob, node, "ntc_degree_from",
+					   degree_from, ARRAY_SIZE(degree_from));
+		if (err < 0) {
+			printf("invalid ntc_degree_from\n");
+			return -EINVAL;
+		}
+
+		sign = degree_from[0];
+		di->ntc_degree_from = degree_from[1];
+		if (sign)
+			di->ntc_degree_from = -di->ntc_degree_from;
+
+		di->ntc_size = len / sizeof(u32);
+	}
+
+	if (di->ntc_size) {
+		di->ntc_table = calloc(len, 1);
+		if (!di->ntc_table) {
+			printf("calloc ocv_table fail\n");
+			return -ENOMEM;
+		}
+
+		err = fdtdec_get_int_array(blob, node, "ntc_table",
+					   di->ntc_table, di->ntc_size);
+		if (err < 0) {
+			printf("read ntc_table array failed\n");
+			return err;
+		}
+	}
+
 	DBG("-------------------------------:\n");
 	DBG("max_input_current:%d\n", di->dts_cur_input);
 	DBG("max_chrg_current:%d\n", di->dts_cur_sel);
@@ -1506,6 +1767,9 @@ static int rk818_bat_parse_dt(struct battery_info *di, void const *blob)
 	DBG("design_qmax:%d\n", di->qmax);
 	DBG("max_soc_offset:%d\n", di->max_soc_offset);
 	DBG("sample_res:%d\n", di->sample_res);
+	DBG("ntc_size=%d\n", di->ntc_size);
+	DBG("ntc_degree_from:%d\n", di->ntc_degree_from);
+	DBG("ntc_degree_to:%d\n", di->ntc_degree_from + di->ntc_size - 1);
 
 	return 0;
 }

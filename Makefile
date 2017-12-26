@@ -905,6 +905,8 @@ endif
 ifdef CONFIG_RKCHIP_RK3368
 ifdef CONFIG_RKCHIP_PX5
 RKCHIP ?= PX5
+else ifdef CONFIG_RKCHIP_PX5_KERNEL4_4
+RKCHIP ?= PX5KERNEL4.4
 else ifdef CONFIG_RKCHIP_RK3368H
 ifdef CONFIG_PRODUCT_MID
 RKCHIP ?= RK3368H
@@ -952,15 +954,8 @@ ifdef CONFIG_PRODUCT_ECHO
 else
 	$(if $(CONFIG_MERGER_MINILOADER), ./tools/boot_merger ./tools/rk_tools/RKBOOT/$(RKCHIP)MINIALL.ini)
 endif
-
-ifdef CONFIG_MERGER_TRUSTIMAGE_DRM
-	$(if $(CONFIG_MERGER_TRUSTIMAGE), ./tools/trust_merger $(if $(CONFIG_RK_TRUSTOS), --subfix) \
-							./tools/rk_tools/RKTRUST/$(RKCHIP)TRUST_DRM.ini)
-else
 	$(if $(CONFIG_MERGER_TRUSTIMAGE), ./tools/trust_merger $(if $(CONFIG_RK_TRUSTOS), --subfix) \
 							./tools/rk_tools/RKTRUST/$(RKCHIP)TRUST.ini)
-endif
-
 ifeq ($(CONFIG_MERGER_TRUSTOS)$(CONFIG_MERGER_TRUSTOS_WITH_TA),yy)
 	$(if $(CONFIG_MERGER_TRUSTOS), ./tools/loaderimage --pack --trustos $(RK_TOS_BIN) trust.img)
 	$(if $(CONFIG_MERGER_TRUSTOS_WITH_TA), ./tools/loaderimage --pack --trustos $(RK_TOS_TA_BIN) trust_with_ta.img)
