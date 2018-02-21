@@ -67,6 +67,9 @@ struct rockchip_connector_funcs {
 const struct rockchip_connector *
 rockchip_get_connector(const void *blob, int connector_node);
 
+#ifdef CONFIG_ROCKCHIP_DRM_TVE
+extern const struct rockchip_connector_funcs rockchip_drm_tve_funcs;
+#endif
 #ifdef CONFIG_ROCKCHIP_DW_MIPI_DSI
 struct dw_mipi_dsi_plat_data;
 extern const struct rockchip_connector_funcs rockchip_dw_mipi_dsi_funcs;
@@ -91,10 +94,11 @@ extern const struct rockchip_lvds_chip_data rk3368_lvds_drv_data;
 extern const struct rockchip_lvds_chip_data rk3126_lvds_drv_data;
 extern const struct rockchip_lvds_chip_data rk3288_lvds_drv_data;
 #endif
-#ifdef CONFIG_ROCKCHIP_DW_HDMI
+#ifdef CONFIG_DRM_ROCKCHIP_DW_HDMI
 struct dw_hdmi_dsi_plat_data;
 extern const struct rockchip_connector_funcs rockchip_dw_hdmi_funcs;
 extern const struct dw_hdmi_plat_data rk3399_hdmi_drv_data;
 extern const struct dw_hdmi_plat_data rk3288_hdmi_drv_data;
+extern const struct dw_hdmi_plat_data rk3328_hdmi_drv_data;
 #endif
 #endif

@@ -593,6 +593,7 @@ static int rockchip_lvds_init(struct display_state *state)
 		conn_state->output_mode = ROCKCHIP_OUT_MODE_P666;
 	else
 		conn_state->output_mode = ROCKCHIP_OUT_MODE_P888;
+	conn_state->color_space = V4L2_COLORSPACE_DEFAULT;
 
 	return 0;
 }
@@ -646,7 +647,8 @@ static int rockchip_lvds_enable(struct display_state *state)
 	if (lvds->pdata->has_vop_sel)
 		rockchip_lvds_vop_routing(lvds, crtc_state->crtc_id);
 
-	if (lvds->output == DISPLAY_OUTPUT_LVDS) {
+	if ((lvds->output == DISPLAY_OUTPUT_LVDS) ||
+	    (lvds->output == DISPLAY_OUTPUT_DUAL_LVDS)){
 		if (lvds->pdata->chip_type == RK3288_LVDS)
 			rk3288_output_lvds(state);
 		else if (lvds->pdata->chip_type == RK3126_LVDS)

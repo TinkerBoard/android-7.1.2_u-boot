@@ -13,6 +13,7 @@
 #include <resource.h>
 #include <asm/arch/rkplat.h>
 #include <asm/unaligned.h>
+#include <linux/compat.h>
 #include <linux/list.h>
 #include <linux/media-bus-format.h>
 
@@ -24,6 +25,56 @@
 static inline int us_to_vertical_line(struct drm_display_mode *mode, int us)
 {
 	return us * mode->clock / mode->htotal / 1000;
+}
+
+static int to_vop_csc_mode(int csc_mode)
+{
+	switch (csc_mode) {
+	case V4L2_COLORSPACE_SMPTE170M:
+		return CSC_BT601L;
+	case V4L2_COLORSPACE_REC709:
+	case V4L2_COLORSPACE_DEFAULT:
+		return CSC_BT709L;
+	case V4L2_COLORSPACE_JPEG:
+		return CSC_BT601F;
+	case V4L2_COLORSPACE_BT2020:
+		return CSC_BT2020;
+	default:
+		return CSC_BT709L;
+	}
+}
+
+static bool is_yuv_output(uint32_t bus_format)
+{
+	switch (bus_format) {
+	case MEDIA_BUS_FMT_YUV8_1X24:
+	case MEDIA_BUS_FMT_YUV10_1X30:
+	case MEDIA_BUS_FMT_UYYVYY8_0_5X24:
+	case MEDIA_BUS_FMT_UYYVYY10_0_5X30:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static bool is_uv_swap(uint32_t bus_format, uint32_t output_mode)
+{
+	/*
+	 * FIXME:
+	 *
+	 * There is no media type for YUV444 output,
+	 * so when out_mode is AAAA or P888, assume output is YUV444 on
+	 * yuv format.
+	 *
+	 * From H/W testing, YUV444 mode need a rb swap.
+	 */
+	if ((bus_format == MEDIA_BUS_FMT_YUV8_1X24 ||
+	     bus_format == MEDIA_BUS_FMT_YUV10_1X30) &&
+	    (output_mode == ROCKCHIP_OUT_MODE_AAAA ||
+	     output_mode == ROCKCHIP_OUT_MODE_P888))
+		return true;
+	else
+		return false;
 }
 
 static int rockchip_vop_init_gamma(struct vop *vop, struct display_state *state)
@@ -81,6 +132,53 @@ static int rockchip_vop_init_gamma(struct vop *vop, struct display_state *state)
 	return 0;
 }
 
+static void vop_post_config(struct display_state *state, struct vop *vop)
+{
+	struct crtc_state *crtc_state = &state->crtc_state;
+	struct connector_state *conn_state = &state->conn_state;
+	struct drm_display_mode *mode = &conn_state->mode;
+	const struct rockchip_crtc *crtc = crtc_state->crtc;
+	u16 vtotal = mode->crtc_vtotal;
+	u16 hact_st = mode->crtc_htotal - mode->crtc_hsync_start;
+	u16 vact_st = mode->crtc_vtotal - mode->crtc_vsync_start;
+	u16 hdisplay = mode->crtc_hdisplay;
+	u16 vdisplay = mode->crtc_vdisplay;
+	u16 hsize = hdisplay * (conn_state->overscan.left_margin + conn_state->overscan.right_margin) / 200;
+	u16 vsize = vdisplay * (conn_state->overscan.top_margin + conn_state->overscan.bottom_margin) / 200;
+	u16 hact_end, vact_end;
+	u32 val;
+
+	if (mode->flags & DRM_MODE_FLAG_INTERLACE)
+		vsize = round_down(vsize, 2);
+
+	hact_st += hdisplay * (100 - conn_state->overscan.left_margin) / 200;
+	hact_end = hact_st + hsize;
+	val = hact_st << 16;
+	val |= hact_end;
+
+	VOP_CTRL_SET(vop, hpost_st_end, val);
+	vact_st += vdisplay * (100 - conn_state->overscan.top_margin) / 200;
+	vact_end = vact_st + vsize;
+	val = vact_st << 16;
+	val |= vact_end;
+	VOP_CTRL_SET(vop, vpost_st_end, val);
+	val = scl_cal_scale2(vdisplay, vsize) << 16;
+	val |= scl_cal_scale2(hdisplay, hsize);
+	VOP_CTRL_SET(vop, post_scl_factor, val);
+#define POST_HORIZONTAL_SCALEDOWN_EN(x)		((x) << 0)
+#define POST_VERTICAL_SCALEDOWN_EN(x)		((x) << 1)
+	VOP_CTRL_SET(vop, post_scl_ctrl,
+		     POST_HORIZONTAL_SCALEDOWN_EN(hdisplay != hsize) |
+		     POST_VERTICAL_SCALEDOWN_EN(vdisplay != vsize));
+	if (mode->flags & DRM_MODE_FLAG_INTERLACE) {
+		u16 vact_st_f1 = vtotal + vact_st + 1;
+		u16 vact_end_f1 = vact_st_f1 + vsize;
+
+		val = vact_st_f1 << 16 | vact_end_f1;
+		VOP_CTRL_SET(vop, vpost_st_end_f1, val);
+	}
+}
+
 static int rockchip_vop_init(struct display_state *state)
 {
 	struct crtc_state *crtc_state = &state->crtc_state;
@@ -89,19 +187,20 @@ static int rockchip_vop_init(struct display_state *state)
 	const struct rockchip_crtc *crtc = crtc_state->crtc;
 	const struct vop_data *vop_data = crtc->data;
 	struct vop *vop;
-	u16 hsync_len = mode->hsync_end - mode->hsync_start;
-	u16 hdisplay = mode->hdisplay;
-	u16 htotal = mode->htotal;
-	u16 hact_st = mode->htotal - mode->hsync_start;
+	u16 hsync_len = mode->crtc_hsync_end - mode->crtc_hsync_start;
+	u16 hdisplay = mode->crtc_hdisplay;
+	u16 htotal = mode->crtc_htotal;
+	u16 hact_st = mode->crtc_htotal - mode->crtc_hsync_start;
 	u16 hact_end = hact_st + hdisplay;
-	u16 vdisplay = mode->vdisplay;
-	u16 vtotal = mode->vtotal;
-	u16 vsync_len = mode->vsync_end - mode->vsync_start;
-	u16 vact_st = mode->vtotal - mode->vsync_start;
+	u16 vdisplay = mode->crtc_vdisplay;
+	u16 vtotal = mode->crtc_vtotal;
+	u16 vsync_len = mode->crtc_vsync_end - mode->crtc_vsync_start;
+	u16 vact_st = mode->crtc_vtotal - mode->crtc_vsync_start;
 	u16 vact_end = vact_st + vdisplay;
-	u32 val;
-	int i;
+	u32 val, act_end;
 	int rate;
+	bool yuv_overlay = false, post_r2y_en = false, post_y2r_en = false;
+	u16 post_csc_mode;
 
 	vop = malloc(sizeof(*vop));
 	if (!vop)
@@ -127,9 +226,10 @@ static int rockchip_vop_init(struct display_state *state)
 #endif
 
 	/* Set aclk hclk and dclk */
-	rate = rkclk_lcdc_clk_set(crtc_state->crtc_id, mode->clock * 1000);
+
+	rate = rkclk_lcdc_clk_set(crtc_state->crtc_id, mode->crtc_clock * 1000);
 	if (rate != mode->clock * 1000) {
-		printf("Warn: vop clk request %dhz, but real clock is %dhz",
+		printf("Warn: vop clk request %dhz, but real clock is %dhz\n",
 		       mode->clock * 1000, rate);
 	}
 	memcpy(vop->regsbak, vop->regs, vop_data->reg_len);
@@ -139,8 +239,12 @@ static int rockchip_vop_init(struct display_state *state)
 	VOP_CTRL_SET(vop, global_regdone_en, 1);
 	VOP_CTRL_SET(vop, axi_outstanding_max_num, 30);
 	VOP_CTRL_SET(vop, axi_max_outstanding_en, 1);
+	VOP_CTRL_SET(vop, reg_done_frm, 1);
 	VOP_CTRL_SET(vop, win_gate[0], 1);
 	VOP_CTRL_SET(vop, win_gate[1], 1);
+	VOP_CTRL_SET(vop, win_channel[0], 0x12);
+	VOP_CTRL_SET(vop, win_channel[1], 0x34);
+	VOP_CTRL_SET(vop, win_channel[2], 0x56);
 	VOP_CTRL_SET(vop, dsp_blank, 0);
 
 	val = 0x8;
@@ -169,6 +273,19 @@ static int rockchip_vop_init(struct display_state *state)
 		VOP_CTRL_SET(vop, data01_swap,
 			!!(conn_state->output_type & ROCKCHIP_OUTPUT_DSI_DUAL_LINK));
 		break;
+	case DRM_MODE_CONNECTOR_TV:
+		if (vdisplay == CVBS_PAL_VDISPLAY)
+			VOP_CTRL_SET(vop, tve_sw_mode, 1);
+		else
+			VOP_CTRL_SET(vop, tve_sw_mode, 0);
+		VOP_CTRL_SET(vop, tve_dclk_pol, 1);
+		VOP_CTRL_SET(vop, tve_dclk_en, 1);
+		/* use the same pol reg with hdmi */
+		VOP_CTRL_SET(vop, hdmi_pin_pol, val);
+		VOP_CTRL_SET(vop, sw_genlock, 1);
+		VOP_CTRL_SET(vop, sw_uv_offset_en, 1);
+		VOP_CTRL_SET(vop, dither_up, 1);
+		break;
 	default:
 		printf("unsupport connector_type[%d]\n", conn_state->type);
 	}
@@ -185,6 +302,14 @@ static int rockchip_vop_init(struct display_state *state)
 	case MEDIA_BUS_FMT_RGB666_1X24_CPADHI:
 		val = DITHER_DOWN_EN(1) | DITHER_DOWN_MODE(RGB888_TO_RGB666);
 		break;
+	case MEDIA_BUS_FMT_YUV8_1X24:
+	case MEDIA_BUS_FMT_UYYVYY8_0_5X24:
+		val = DITHER_DOWN_EN(0) | PRE_DITHER_DOWN_EN(1);
+		break;
+	case MEDIA_BUS_FMT_YUV10_1X30:
+	case MEDIA_BUS_FMT_UYYVYY10_0_5X30:
+		val = DITHER_DOWN_EN(0) | PRE_DITHER_DOWN_EN(0);
+		break;
 	case MEDIA_BUS_FMT_RGB888_1X24:
 	default:
 		val = DITHER_DOWN_EN(0) | PRE_DITHER_DOWN_EN(0);
@@ -197,21 +322,87 @@ static int rockchip_vop_init(struct display_state *state)
 	val |= DITHER_DOWN_MODE_SEL(DITHER_DOWN_ALLEGRO);
 	VOP_CTRL_SET(vop, dither_down, val);
 
+	VOP_CTRL_SET(vop, dclk_ddr,
+		     conn_state->output_mode == ROCKCHIP_OUT_MODE_YUV420 ? 1 : 0);
+	VOP_CTRL_SET(vop, hdmi_dclk_out_en,
+		     conn_state->output_mode == ROCKCHIP_OUT_MODE_YUV420 ? 1 : 0);
+
+	if (is_uv_swap(conn_state->bus_format, conn_state->output_mode))
+		VOP_CTRL_SET(vop, dsp_data_swap, DSP_RB_SWAP);
+	else
+		VOP_CTRL_SET(vop, dsp_data_swap, 0);
+
 	VOP_CTRL_SET(vop, out_mode, conn_state->output_mode);
+
+	if (VOP_CTRL_SUPPORT(vop, overlay_mode)) {
+		yuv_overlay = is_yuv_output(conn_state->bus_format);
+		VOP_CTRL_SET(vop, overlay_mode, yuv_overlay);
+	}
+	/*
+	 * todo: r2y for win csc
+	 */
+	VOP_CTRL_SET(vop, dsp_out_yuv, is_yuv_output(conn_state->bus_format));
+
+	if (yuv_overlay) {
+		if (!is_yuv_output(conn_state->bus_format))
+			post_y2r_en = true;
+	} else {
+		if (is_yuv_output(conn_state->bus_format))
+			post_r2y_en = true;
+	}
+
+	post_csc_mode = to_vop_csc_mode(conn_state->color_space);
+	VOP_CTRL_SET(vop, bcsh_r2y_en, post_r2y_en);
+	VOP_CTRL_SET(vop, bcsh_y2r_en, post_y2r_en);
+	VOP_CTRL_SET(vop, bcsh_r2y_csc_mode, post_csc_mode);
+	VOP_CTRL_SET(vop, bcsh_y2r_csc_mode, post_csc_mode);
+
+	/*
+	 * Background color is 10bit depth if vop version >= 3.5
+	 */
+	if (!is_yuv_output(conn_state->bus_format))
+		val = 0;
+	else if (VOP_MAJOR(vop->version) == 3 &&
+		 VOP_MINOR(vop->version) >= 5)
+		val = 0x20010200;
+	else
+		val = 0x801080;
+	VOP_CTRL_SET(vop, dsp_background, val);
+
 	VOP_CTRL_SET(vop, htotal_pw, (htotal << 16) | hsync_len);
 	val = hact_st << 16;
 	val |= hact_end;
 	VOP_CTRL_SET(vop, hact_st_end, val);
-	VOP_CTRL_SET(vop, hpost_st_end, val);
-	VOP_CTRL_SET(vop, vtotal_pw, (vtotal << 16) | vsync_len);
 	val = vact_st << 16;
 	val |= vact_end;
 	VOP_CTRL_SET(vop, vact_st_end, val);
-	VOP_CTRL_SET(vop, vpost_st_end, val);
+	if (mode->flags & DRM_MODE_FLAG_INTERLACE) {
+		u16 vact_st_f1 = vtotal + vact_st + 1;
+		u16 vact_end_f1 = vact_st_f1 + vdisplay;
+
+		val = vact_st_f1 << 16 | vact_end_f1;
+		VOP_CTRL_SET(vop, vact_st_end_f1, val);
+
+		val = vtotal << 16 | (vtotal + vsync_len);
+		VOP_CTRL_SET(vop, vs_st_end_f1, val);
+		VOP_CTRL_SET(vop, dsp_interlace, 1);
+		VOP_CTRL_SET(vop, p2i_en, 1);
+		vtotal += vtotal + 1;
+		act_end = vact_end_f1;
+	} else {
+		VOP_CTRL_SET(vop, dsp_interlace, 0);
+		VOP_CTRL_SET(vop, p2i_en, 0);
+		act_end = vact_end;
+	}
+	VOP_CTRL_SET(vop, vtotal_pw, (vtotal << 16) | vsync_len);
+	vop_post_config(state, vop);
+	VOP_CTRL_SET(vop, core_dclk_div,
+		     !!(mode->flags & DRM_MODE_FLAG_DBLCLK));
+
 	VOP_CTRL_SET(vop, standby, 1);
-	VOP_LINE_FLAG_SET(vop, line_flag_num[0], vact_end - 3);
+	VOP_LINE_FLAG_SET(vop, line_flag_num[0], act_end - 3);
 	VOP_LINE_FLAG_SET(vop, line_flag_num[1],
-			  vact_end - us_to_vertical_line(mode, 1000));
+			  act_end - us_to_vertical_line(mode, 1000));
 	vop_cfg_done(vop);
 
 	return 0;

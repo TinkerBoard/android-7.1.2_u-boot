@@ -162,7 +162,7 @@ static int rkss_read_section(struct rk_secure_storage *rkss)
 	if (pt == NULL)
 		return -1;
 
-	ret = StorageReadLba(pt->start + (rkss->index * RKSS_DATA_LEN), rkss->data, 1);
+	ret = StorageReadLba(pt->start + rkss->index, rkss->data, 1);
 	if (ret < 0)
 		return -1;
 
@@ -176,7 +176,7 @@ static int rkss_write_section(struct rk_secure_storage *rkss)
 	if (pt == NULL)
 		return -1;
 
-	ret = StorageWriteLba(pt->start + (rkss->index * RKSS_DATA_LEN), rkss->data, 1, 0);
+	ret = StorageWriteLba(pt->start + rkss->index, rkss->data, 1, 0);
 	if (ret < 0)
 		return -1;
 
@@ -188,13 +188,13 @@ static void rkss_dump(void* data, unsigned int len)
 {
 	char *p = (char *)data;
 	unsigned int i = 0;
-	DMSG("-------------- DUMP %d --------------", len);
+	printf("-------------- DUMP %d --------------", len);
 	for (i = 0; i < len; i++)
 	{
 		printf("%02x ", *(p + i));
 	}
 	printf("\n");
-	DMSG("------------- DUMP END -------------");
+	printf("------------- DUMP END -------------");
 }
 
 static void rkss_dump_ptable(void)
@@ -286,6 +286,7 @@ static int rkss_verify_usedflags(struct rk_secure_storage* rkss)
 		if ( flag != 0x1 )
 		{
 			debug("init usedflags section ...");
+			memset(rkss->data, 0x00, RKSS_DATA_LEN);
 			int n = 0;
 			for (n = 0; n < RKSS_PARTITION_TABLE_COUNT + 1; n++)
 			{
@@ -478,7 +479,7 @@ static int rkss_get_empty_section_from_usedflags(int section_size)
 	}
 
 	int i = 0;
-	int found = 0, count0 = 0;
+	int count0 = 0;
 	for (i = 0; i < RKSS_DATA_SECTION_COUNT; i++)
 	{
 		uint8_t *flag = (uint8_t *)rkss.data + (int)i/2;
@@ -488,12 +489,11 @@ static int rkss_get_empty_section_from_usedflags(int section_size)
 		{
 			if (++count0 == section_size)
 			{
-				return found;
+				return (i + 1 - section_size);
 			}
 		}
 		else
 		{
-			++found;
 			count0 = 0;
 		}
 	}
@@ -683,7 +683,7 @@ static int tee_fs_open(struct tee_fs_rpc *fsrpc)
 		return -1;
 	}
 
-	debug("tee_fs_open open file: %s, len: %d", filename, strlen(filename));
+	debug("tee_fs_open open file: %s, len: %zu", filename, strlen(filename));
 	struct rkss_file_info p = {0};
 	int ret = rkss_get_fileinfo_by_name(filename, &p);
 	if (ret < 0)
@@ -729,7 +729,7 @@ static int tee_fs_open(struct tee_fs_rpc *fsrpc)
 
 	debug("tee_fs_open ! %s , fd:%d, flag: %x, len: %d",
 			filename, fsrpc->fd, fsrpc->flags, fsrpc->len);
-	
+
 	return fsrpc->fd;
 }
 
@@ -776,10 +776,9 @@ static int tee_fs_read(struct tee_fs_rpc *fsrpc)
 		}
 
 		int read = left > RKSS_DATA_LEN ? RKSS_DATA_LEN : left;
-		data = (void *)((char *)data + di);
-		memcpy(data, rkss.data, read);
+		memcpy(data + di, rkss.data, read);
 #ifdef DEBUG_RKFSS
-		rkss_dump(data, read);
+		rkss_dump(data + di, read);
 #endif
 		di += read;
 		left -= read;
@@ -1208,6 +1207,11 @@ int tee_supp_rk_fs_init(void)
 #endif
 
 	return 0;
+}
+void OpteeClientRkFsInit(void)
+{
+	debug(" OpteeClientRkFsInit\n");
+	tee_supp_rk_fs_init();
 }
 
 static int rkss_step = 0;

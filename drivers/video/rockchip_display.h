@@ -34,6 +34,9 @@ enum display_mode {
 #define ROCKCHIP_OUT_MODE_P888	0
 #define ROCKCHIP_OUT_MODE_P666	1
 #define ROCKCHIP_OUT_MODE_P565	2
+#define ROCKCHIP_OUT_MODE_S888		8
+#define ROCKCHIP_OUT_MODE_S888_DUMMY	12
+#define ROCKCHIP_OUT_MODE_YUV420	14
 /* for use special outface */
 #define ROCKCHIP_OUT_MODE_AAAA	15
 
@@ -66,6 +69,13 @@ struct panel_state {
 	void *private;
 };
 
+struct overscan {
+	int left_margin;
+	int right_margin;
+	int top_margin;
+	int bottom_margin;
+};
+
 struct connector_state {
 	int node;
 	int phy_node;
@@ -76,11 +86,13 @@ struct connector_state {
 	void *phy_private;
 
 	struct drm_display_mode mode;
+	struct overscan overscan;
 	u8 edid[EDID_SIZE * 4];
 	int bus_format;
 	int output_mode;
 	int type;
 	int output_type;
+	int color_space;
 
 	struct {
 		u32 *lut;
@@ -126,5 +138,7 @@ struct display_state {
 };
 
 int drm_mode_vrefresh(const struct drm_display_mode *mode);
+bool drm_mode_is_420(const struct drm_display_info *display,
+		     const struct drm_display_mode *mode);
 
 #endif

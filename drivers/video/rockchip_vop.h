@@ -66,6 +66,8 @@
 #define VOP_WIN_GET(x, name) \
 		vop_read_reg(x, vop->win->offset, &vop->win->name)
 
+#define CVBS_PAL_VDISPLAY              288
+
 enum alpha_mode {
 	ALPHA_STRAIGHT,
 	ALPHA_INVERSE,
@@ -129,6 +131,18 @@ enum dither_down_mode_sel {
 	DITHER_DOWN_ALLEGRO = 0x0,
 	DITHER_DOWN_FRC = 0x1
 };
+
+enum vop_csc_format {
+	CSC_BT601L,
+	CSC_BT709L,
+	CSC_BT601F,
+	CSC_BT2020,
+};
+
+#define DSP_BG_SWAP		0x1
+#define DSP_RB_SWAP		0x2
+#define DSP_RG_SWAP		0x4
+#define DSP_DELTA_SWAP		0x8
 
 #define PRE_DITHER_DOWN_EN(x)	((x) << 0)
 #define DITHER_DOWN_EN(x)	((x) << 1)
@@ -242,6 +256,7 @@ struct vop_ctrl {
 	struct vop_reg core_dclk_div;
 	struct vop_reg dclk_ddr;
 	struct vop_reg p2i_en;
+	struct vop_reg hdmi_dclk_out_en;
 	struct vop_reg rgb_en;
 	struct vop_reg edp_en;
 	struct vop_reg hdmi_en;
@@ -259,6 +274,13 @@ struct vop_ctrl {
 	struct vop_reg dither_up;
 	struct vop_reg dither_down;
 
+	struct vop_reg sw_dac_sel;
+	struct vop_reg tve_sw_mode;
+	struct vop_reg tve_dclk_pol;
+	struct vop_reg tve_dclk_en;
+	struct vop_reg sw_genlock;
+	struct vop_reg sw_uv_offset_en;
+
 	struct vop_reg dsp_out_yuv;
 	struct vop_reg dsp_data_swap;
 	struct vop_reg dsp_ccir656_avg;
@@ -275,6 +297,23 @@ struct vop_ctrl {
 	struct vop_reg dsp_background;
 
 	struct vop_reg win_gate[4];
+	struct vop_reg win_channel[4];
+
+	/* BCSH */
+	struct vop_reg bcsh_brightness;
+	struct vop_reg bcsh_contrast;
+	struct vop_reg bcsh_sat_con;
+	struct vop_reg bcsh_sin_hue;
+	struct vop_reg bcsh_cos_hue;
+	struct vop_reg bcsh_r2y_csc_mode;
+	struct vop_reg bcsh_r2y_en;
+	struct vop_reg bcsh_y2r_csc_mode;
+	struct vop_reg bcsh_y2r_en;
+	struct vop_reg bcsh_color_bar;
+	struct vop_reg bcsh_out_mode;
+	struct vop_reg bcsh_en;
+
+	struct vop_reg reg_done_frm;
 	struct vop_reg cfg_done;
 };
 

@@ -288,6 +288,143 @@ static int display_get_timing_from_dts(int panel, const void *blob,
 	return 0;
 }
 
+/**
+ * drm_mode_set_crtcinfo - set CRTC modesetting timing parameters
+ * @p: mode
+ * @adjust_flags: a combination of adjustment flags
+ *
+ * Setup the CRTC modesetting timing parameters for @p, adjusting if necessary.
+ *
+ * - The CRTC_INTERLACE_HALVE_V flag can be used to halve vertical timings of
+ *   interlaced modes.
+ * - The CRTC_STEREO_DOUBLE flag can be used to compute the timings for
+ *   buffers containing two eyes (only adjust the timings when needed, eg. for
+ *   "frame packing" or "side by side full").
+ * - The CRTC_NO_DBLSCAN and CRTC_NO_VSCAN flags request that adjustment *not*
+ *   be performed for doublescan and vscan > 1 modes respectively.
+ */
+void drm_mode_set_crtcinfo(struct drm_display_mode *p, int adjust_flags)
+{
+	if ((p == NULL) || ((p->type & DRM_MODE_TYPE_CRTC_C) == DRM_MODE_TYPE_BUILTIN))
+		return;
+
+	if (p->flags & DRM_MODE_FLAG_DBLCLK)
+		p->crtc_clock = 2 * p->clock;
+	else
+		p->crtc_clock = p->clock;
+	p->crtc_hdisplay = p->hdisplay;
+	p->crtc_hsync_start = p->hsync_start;
+	p->crtc_hsync_end = p->hsync_end;
+	p->crtc_htotal = p->htotal;
+	p->crtc_hskew = p->hskew;
+	p->crtc_vdisplay = p->vdisplay;
+	p->crtc_vsync_start = p->vsync_start;
+	p->crtc_vsync_end = p->vsync_end;
+	p->crtc_vtotal = p->vtotal;
+
+	if (p->flags & DRM_MODE_FLAG_INTERLACE) {
+		if (adjust_flags & CRTC_INTERLACE_HALVE_V) {
+			p->crtc_vdisplay /= 2;
+			p->crtc_vsync_start /= 2;
+			p->crtc_vsync_end /= 2;
+			p->crtc_vtotal /= 2;
+		}
+	}
+
+	if (!(adjust_flags & CRTC_NO_DBLSCAN)) {
+		if (p->flags & DRM_MODE_FLAG_DBLSCAN) {
+			p->crtc_vdisplay *= 2;
+			p->crtc_vsync_start *= 2;
+			p->crtc_vsync_end *= 2;
+			p->crtc_vtotal *= 2;
+		}
+	}
+
+	if (!(adjust_flags & CRTC_NO_VSCAN)) {
+		if (p->vscan > 1) {
+			p->crtc_vdisplay *= p->vscan;
+			p->crtc_vsync_start *= p->vscan;
+			p->crtc_vsync_end *= p->vscan;
+			p->crtc_vtotal *= p->vscan;
+		}
+	}
+
+	if (adjust_flags & CRTC_STEREO_DOUBLE) {
+		unsigned int layout = p->flags & DRM_MODE_FLAG_3D_MASK;
+
+		switch (layout) {
+		case DRM_MODE_FLAG_3D_FRAME_PACKING:
+			p->crtc_clock *= 2;
+			p->crtc_vdisplay += p->crtc_vtotal;
+			p->crtc_vsync_start += p->crtc_vtotal;
+			p->crtc_vsync_end += p->crtc_vtotal;
+			p->crtc_vtotal += p->crtc_vtotal;
+			break;
+		}
+	}
+
+	p->crtc_vblank_start = min(p->crtc_vsync_start, p->crtc_vdisplay);
+	p->crtc_vblank_end = max(p->crtc_vsync_end, p->crtc_vtotal);
+	p->crtc_hblank_start = min(p->crtc_hsync_start, p->crtc_hdisplay);
+	p->crtc_hblank_end = max(p->crtc_hsync_end, p->crtc_htotal);
+}
+
+/**
+ * drm_mode_is_420_only - if a given videomode can be only supported in YCBCR420
+ * output format
+ *
+ * @connector: drm connector under action.
+ * @mode: video mode to be tested.
+ *
+ * Returns:
+ * true if the mode can be supported in YCBCR420 format
+ * false if not.
+ */
+bool drm_mode_is_420_only(const struct drm_display_info *display,
+			  const struct drm_display_mode *mode)
+{
+	u8 vic = drm_match_cea_mode(mode);
+
+	return test_bit(vic, display->hdmi.y420_vdb_modes);
+}
+
+/**
+ * drm_mode_is_420_also - if a given videomode can be supported in YCBCR420
+ * output format also (along with RGB/YCBCR444/422)
+ *
+ * @display: display under action.
+ * @mode: video mode to be tested.
+ *
+ * Returns:
+ * true if the mode can be support YCBCR420 format
+ * false if not.
+ */
+bool drm_mode_is_420_also(const struct drm_display_info *display,
+			  const struct drm_display_mode *mode)
+{
+	u8 vic = drm_match_cea_mode(mode);
+
+	return test_bit(vic, display->hdmi.y420_cmdb_modes);
+}
+
+/**
+ * drm_mode_is_420 - if a given videomode can be supported in YCBCR420
+ * output format
+ *
+ * @display: display under action.
+ * @mode: video mode to be tested.
+ *
+ * Returns:
+ * true if the mode can be supported in YCBCR420 format
+ * false if not.
+ */
+bool drm_mode_is_420(const struct drm_display_info *display,
+		     const struct drm_display_mode *mode)
+{
+	return drm_mode_is_420_only(display, mode) ||
+		drm_mode_is_420_also(display, mode);
+}
+
 static int display_get_timing(struct display_state *state)
 {
 	const struct rockchip_connector *conn = state->conn_state.connector;
@@ -351,9 +488,11 @@ done:
 static int display_init(struct display_state *state)
 {
 	const struct rockchip_connector *conn = state->conn_state.connector;
-	const struct rockchip_crtc *crtc = state->crtc_state.crtc;
 	const struct rockchip_connector_funcs *conn_funcs = conn->funcs;
+	struct rockchip_crtc *crtc = state->crtc_state.crtc;
 	const struct rockchip_crtc_funcs *crtc_funcs = crtc->funcs;
+	const struct connector_state *conn_state = &state->conn_state;
+	struct drm_display_mode *mode = &conn_state->mode;
 	int ret = 0;
 
 	if (state->is_init)
@@ -372,8 +511,20 @@ static int display_init(struct display_state *state)
 	/*
 	 * support hotplug, but not connect;
 	 */
+
+#ifdef CONFIG_ROCKCHIP_DRM_TVE
+	if (crtc->hdmi_hpd && conn_state->type == DRM_MODE_CONNECTOR_TV) {
+		printf("hdmi plugin ,skip tve\n");
+		goto deinit;
+	}
+#endif
 	if (conn_funcs->detect) {
 		ret = conn_funcs->detect(state);
+
+#ifdef CONFIG_ROCKCHIP_DRM_TVE
+		if (conn_state->type == DRM_MODE_CONNECTOR_HDMIA)
+			crtc->hdmi_hpd = ret;
+#endif
 		if (!ret)
 			goto deinit;
 	}
@@ -387,6 +538,7 @@ static int display_init(struct display_state *state)
 		if (ret)
 			goto deinit;
 	}
+	drm_mode_set_crtcinfo(mode, CRTC_INTERLACE_HALVE_V);
 
 	if (crtc_funcs->init) {
 		ret = crtc_funcs->init(state);
@@ -846,6 +998,10 @@ int rockchip_display_init(void)
 		s->blob = blob;
 		s->conn_state.node = conn_node;
 		s->conn_state.connector = conn;
+		s->conn_state.overscan.left_margin = 100;
+		s->conn_state.overscan.right_margin = 100;
+		s->conn_state.overscan.top_margin = 100;
+		s->conn_state.overscan.bottom_margin = 100;
 		s->crtc_state.node = crtc_node;
 		s->crtc_state.crtc = crtc;
 		s->crtc_state.crtc_id = get_crtc_id(blob, connect);
@@ -933,8 +1089,15 @@ void rockchip_display_fixup(void *blob)
 		FDT_SET_U32("logo,ymirror", s->logo.ymirror);
 		FDT_SET_U32("video,hdisplay", s->conn_state.mode.hdisplay);
 		FDT_SET_U32("video,vdisplay", s->conn_state.mode.vdisplay);
+		FDT_SET_U32("video,crtc_hsync_end", s->conn_state.mode.crtc_hsync_end);
+		FDT_SET_U32("video,crtc_vsync_end", s->conn_state.mode.crtc_vsync_end);
 		FDT_SET_U32("video,vrefresh",
 			    drm_mode_vrefresh(&s->conn_state.mode));
+		FDT_SET_U32("video,flags", s->conn_state.mode.flags);
+		FDT_SET_U32("overscan,left_margin", s->conn_state.overscan.left_margin);
+		FDT_SET_U32("overscan,right_margin", s->conn_state.overscan.right_margin);
+		FDT_SET_U32("overscan,top_margin", s->conn_state.overscan.top_margin);
+		FDT_SET_U32("overscan,bottom_margin", s->conn_state.overscan.bottom_margin);
 #undef FDT_SET_U32
 	}
 }

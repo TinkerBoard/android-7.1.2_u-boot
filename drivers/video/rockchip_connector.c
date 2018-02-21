@@ -20,6 +20,12 @@
 #include "rockchip_connector.h"
 
 static const struct rockchip_connector g_connector[] = {
+#ifdef CONFIG_ROCKCHIP_DRM_TVE
+	{
+         .compatible = "rockchip,rk3328-tve",
+         .funcs = &rockchip_drm_tve_funcs,
+	},
+#endif
 #ifdef CONFIG_ROCKCHIP_DW_MIPI_DSI
 	{
 	 .compatible = "rockchip,rk3128-mipi-dsi",
@@ -80,18 +86,22 @@ static const struct rockchip_connector g_connector[] = {
 	 .data = &rk3126_lvds_drv_data,
 	},
 #endif
-#ifdef CONFIG_ROCKCHIP_DW_HDMI
+#ifdef CONFIG_DRM_ROCKCHIP_DW_HDMI
 	{
 	 .compatible = "rockchip,rk3288-dw-hdmi",
 	 .funcs = &rockchip_dw_hdmi_funcs,
 	 .data = &rk3288_hdmi_drv_data,
-	},{
-         .compatible = "rockchip,rk3368-dw-hdmi",
-         .funcs = &rockchip_dw_hdmi_funcs,
-        },{
+	}, {
+	 .compatible = "rockchip,rk3368-dw-hdmi",
+	 .funcs = &rockchip_dw_hdmi_funcs,
+	}, {
 	 .compatible = "rockchip,rk3399-dw-hdmi",
 	 .funcs = &rockchip_dw_hdmi_funcs,
 	 .data = &rk3399_hdmi_drv_data,
+	}, {
+	 .compatible = "rockchip,rk3328-dw-hdmi",
+	 .funcs = &rockchip_dw_hdmi_funcs,
+	 .data = &rk3328_hdmi_drv_data,
 	}
 
 #endif
