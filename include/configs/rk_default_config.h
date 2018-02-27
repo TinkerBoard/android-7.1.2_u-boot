@@ -47,7 +47,7 @@
 #undef CONFIG_GZIP
 #undef CONFIG_ZLIB
 #undef CONFIG_SOURCE
-#undef CONFIG_PARTITIONS
+
 
 /* config for cmd_bootm */
 #undef CONFIG_BOOTM_NETBSD
@@ -314,6 +314,8 @@
 /* fastboot */
 #define CONFIG_CMD_FASTBOOT
 
+/* ums */
+#define CONFIG_CMD_USB_MASS_STORAGE
 
 /* rk mtd block size */
 #define RK_BLK_SIZE			512
@@ -447,5 +449,21 @@
 
 #endif /* CONFIG_LCD */
 
+#ifdef CONFIG_CMD_USB_MASS_STORAGE
+#define CONFIG_MMC
+#define CONFIG_MMC_RK
+#define CONFIG_GENERIC_MMC
 
+#define CONFIG_USB_GADGET
+	#define CONFIG_USB_GADGET_VBUS_DRAW 0
+	#define CONFIG_SYS_CACHELINE_SIZE  64
+#define CONFIG_USBDOWNLOAD_GADGET
+	#define CONFIG_G_DNL_MANUFACTURER       "ASUS"
+	#define CONFIG_G_DNL_VENDOR_NUM         0x0b05
+	#define CONFIG_G_DNL_PRODUCT_NUM        0x7820
+#define CONFIG_USB_GADGET_MASS_STORAGE
+
+#define CONFIG_USB_GADGET_DWC2_OTG
+#define CONFIG_USB_GADGET_DUALSPEED
+#endif
 #endif /* __RK_DEFAULT_CONFIG_H */

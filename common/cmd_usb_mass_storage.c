@@ -36,7 +36,7 @@ static int ums_write_sector(struct ums *ums_dev,
 static struct ums ums_dev = {
 	.read_sector = ums_read_sector,
 	.write_sector = ums_write_sector,
-	.name = "UMS disk",
+	.name = "TinkerBoard UMS disk",
 };
 
 struct ums *ums_init(const char *devtype, const char *devnum)
@@ -137,7 +137,7 @@ int do_usb_mass_storage(cmd_tbl_t *cmdtp, int flag,
 	}
 
 	while (1) {
-		usb_gadget_handle_interrupts();
+		usb_gadget_handle_interrupts(controller_index);
 
 		rc = fsg_main_thread(NULL);
 		if (rc) {
