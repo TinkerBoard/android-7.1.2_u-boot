@@ -467,6 +467,7 @@ bool board_fbt_exit_uboot_charge(void)
  * don't enter fastboot mode, we need our environment setup for
  * things like unlock state, etc.
  */
+extern bool force_ums;
 void board_fbt_preboot(void)
 {
 	enum fbt_reboot_type frt;
@@ -628,10 +629,10 @@ void board_fbt_preboot(void)
 #endif
 
 	if (frt == FASTBOOT_REBOOT_RECOVERY) {
-		FBTDBG("\n%s: starting recovery img because of reboot flag\n", __func__);
+		printf("\n%s: starting recovery img because of reboot flag\n", __func__);
 		board_fbt_run_recovery();
 	} else if (frt == FASTBOOT_REBOOT_RECOVERY_WIPE_DATA) {
-		FBTDBG("\n%s: starting recovery img to wipe data "
+		printf("\n%s: starting recovery img to wipe data "
 				"because of reboot flag\n", __func__);
 		/* we've not initialized most of our state so don't
 		 * save env in this case
@@ -640,12 +641,14 @@ void board_fbt_preboot(void)
 	}
 #ifdef CONFIG_CMD_FASTBOOT
 	else if (frt == FASTBOOT_REBOOT_FASTBOOT) {
-		FBTDBG("\n%s: starting fastboot because of reboot flag\n", __func__);
+		printf("\n%s: starting fastboot because of reboot flag\n", __func__);
 		board_fbt_request_start_fastboot();
 	}
 #endif
 	else {
-		FBTDBG("\n%s: check misc command.\n", __func__);
+		if(force_ums) return;
+
+		printf("\n%s: check misc command.\n", __func__);
 		/* unknown reboot cause (typically because of a cold boot).
 		 * check if we had misc command to boot recovery.
 		 */

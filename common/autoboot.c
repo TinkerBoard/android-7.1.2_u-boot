@@ -12,6 +12,7 @@
 #include <fdtdec.h>
 #include <menu.h>
 #include <post.h>
+#include <linux/err.h>
 
 DECLARE_GLOBAL_DATA_PTR;
 
@@ -25,7 +26,8 @@ DECLARE_GLOBAL_DATA_PTR;
 
 /* Stored value of bootdelay, used by autoboot_command() */
 static int stored_bootdelay;
-
+bool force_ums = false;
+bool getdescriptor = false;
 /***************************************************************************
  * Watch for 'delay' seconds for autoboot stop or autoboot delay string.
  * returns: 0 -  no key string, allow autoboot 1 - got key string, abort
@@ -278,10 +280,38 @@ const char *bootdelay_process(void)
 	return s;
 }
 
+extern int do_usb_mass_storage(cmd_tbl_t *cmdtp, int flag,	int argc, char * const argv[]);
+extern int gpio_direction_output(unsigned gpio, int value);
+extern void usb_current_limit_ctrl(bool);
+extern void rk3288_maskrom_ctrl(bool);
+
 void autoboot_command(const char *s)
 {
 	debug("### main_loop: bootcmd=\"%s\"\n", s ? s : "<UNDEFINED>");
 
+	if(force_ums) {
+		// force to enter ums mode
+		char *local_args[4];
+		char str1[]="ums", str2[]="1", str3[]="mmc", str4[]="0";
+
+		local_args[0]=str1;
+		local_args[1]=str2;
+		local_args[2]=str3;
+		local_args[3]=str4;
+		if (do_usb_mass_storage(NULL, 0, 4, local_args) == -ETIMEDOUT) {
+			// lock usb current limit and do not touch the maskrom jumper setting
+			usb_current_limit_ctrl(false);
+			rk3288_maskrom_ctrl(false);
+
+			// because we skip rkloader_run_misc_cmd() when force enable UMS,
+			// we need to run it again, if we exit the UMS mode
+			printf("check misc command after ums mode timeout\n");
+			/* unknown reboot cause (typically because of a cold boot).
+			 * check if we had misc command to boot recovery.
+			 */
+			rkloader_run_misc_cmd();
+		}
+	}
 	if (stored_bootdelay != -1 && s && !abortboot(stored_bootdelay)) {
 #if defined(CONFIG_AUTOBOOT_KEYED) && !defined(CONFIG_AUTOBOOT_KEYED_CTRLC)
 		int prev = disable_ctrlc(1);	/* disable Control C checking */
