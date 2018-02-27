@@ -62,7 +62,7 @@
 #endif /* CONFIG_SECUREBOOT_CRYPTO */
 
 /* mod it to enable console commands.	*/
-#define CONFIG_BOOTDELAY		0
+#define CONFIG_BOOTDELAY		1
 #define CONFIG_DIRECT_LOGO
 
 /* efuse version */
