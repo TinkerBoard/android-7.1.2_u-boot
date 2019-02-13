@@ -184,11 +184,12 @@ enum fbt_reboot_type board_fbt_get_reboot_type(void)
 	return frt;
 }
 
+int vbus = 0;
 int board_fbt_key_pressed(void)
 {
 	uint32 boot_rockusb = 0, boot_recovery = 0, boot_fastboot = 0;
 	enum fbt_reboot_type frt = FASTBOOT_REBOOT_UNKNOWN;
-	int vbus = 0;
+
 	int ir_keycode = 0;
 
 #ifdef CONFIG_CMD_ROCKUSB

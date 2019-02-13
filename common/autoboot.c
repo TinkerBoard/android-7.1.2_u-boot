@@ -288,12 +288,12 @@ extern int do_usb_mass_storage(cmd_tbl_t *cmdtp, int flag,	int argc, char * cons
 extern int gpio_direction_output(unsigned gpio, int value);
 extern void usb_current_limit_ctrl(bool);
 extern void rk3288_maskrom_ctrl(bool);
-
+extern int vbus;
 void autoboot_command(const char *s)
 {
 	debug("### main_loop: bootcmd=\"%s\"\n", s ? s : "<UNDEFINED>");
 
-	if(force_ums) {
+	if(force_ums && vbus) {
 		// force to enter ums mode
 		char *local_args[4];
 		char str1[]="ums", str2[]="1", str3[]="mmc", str4[]="0";
